@@ -17,7 +17,7 @@ type jsonrpcRequest struct {
 	Jsonrpc string        `json:"jsonrpc"`
 	Method  string        `json:"method"`
 	Params  []interface{} `json:"params"`
-	ID      int           `json:"id"`
+	ID      interface{}   `json:"id"`
 }
 
 type jsonrpcError struct {
@@ -27,13 +27,13 @@ type jsonrpcError struct {
 
 type jsonrpcErrorResponse struct {
 	Jsonrpc string        `json:"jsonrpc"`
-	ID      *int          `json:"id,omitempty"`
+	ID      interface{}   `json:"id"`
 	Error   *jsonrpcError `json:"error,omitempty"`
 }
 
 type jsonrpcResponse struct {
 	Jsonrpc string      `json:"jsonrpc"`
-	ID      *int        `json:"id,omitempty"`
+	ID      interface{} `json:"id"`
 	Result  interface{} `json:"result,omitempty"`
 }
 
