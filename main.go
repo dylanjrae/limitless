@@ -92,10 +92,43 @@ func handleGetLogsResponse(c *gin.Context, req *jsonrpcRequest, bigTableClient *
 	return jsonrpcResponse{}, nil
 }
 
+func handleBlockByHashResponse(c *gin.Context, req *jsonrpcRequest, bigTableClient *bigtable.Client) (jsonrpcResponse, error) {
+
+	return jsonrpcResponse{}, nil
+}
+
+func handleBlockByNumberResponse(c *gin.Context, req *jsonrpcRequest, bigTableClient *bigtable.Client) (jsonrpcResponse, error) {
+
+	return jsonrpcResponse{}, nil
+}
+
+func handleTransactionByHashResponse(c *gin.Context, req *jsonrpcRequest, bigTableClient *bigtable.Client) (jsonrpcResponse, error) {
+	bigTableContext := context.Background()
+	chainID := c.Param("chain_id")
+	tbl := bigTableClient.Open(chainID + "-txbyhash")
+
+	txHash := req.Params[0]
+	txHashStr := txHash.(string)
+
+	row, err := tbl.ReadRow(bigTableContext, txHashStr)
+	if err != nil {
+		return jsonrpcResponse{}, err
+	}
+	txData := string(row["cf"][0].Value)
+
+	response := jsonrpcResponse{
+		Jsonrpc: "2.0",
+		ID:      &req.ID,
+		Result:  txData,
+	}
+
+	return response, nil
+}
+
 func fetchLatestBlockNumber(client *bigtable.Client, chainID string) (string, error) {
 	bigTableContext := context.Background()
 
-	tbl := client.Open("blockbynumber")
+	tbl := client.Open(chainID + "-blockbynumber")
 
 	// Create a filter that only accepts the latest version of each cell.
 	filter := bigtable.LatestNFilter(1)
@@ -107,7 +140,7 @@ func fetchLatestBlockNumber(client *bigtable.Client, chainID string) (string, er
 		blockNumberBytes := []byte(row.Key())
 
 		// Convert the big-endian byte slice back to an integer.
-		blockNumber := binary.BigEndian.Uint64(blockNumberBytes)
+		blockNumber := ^binary.BigEndian.Uint64(blockNumberBytes)
 
 		// Update the latest block number.
 		if blockNumber > latestBlockNumber {
@@ -132,7 +165,7 @@ func setupBigTable() {
 		log.Fatalf("Could not create admin client: %v", err)
 	}
 
-	tableNames := []string{"blockbyhash", "blockbynumber"}
+	tableNames := []string{"1-blockbyhash", "1-blockbynumber", "1-txbyhash"} //table names prefixed with chain id
 
 	for _, tableName := range tableNames {
 		// Check if the table already exists.
@@ -196,8 +229,9 @@ func addSampleData() {
 
 	for _, bd := range blockData {
 		// Add a row to the "blockbyhash" table.
-		blockHashTable := client.Open("blockbyhash")
+		blockHashTable := client.Open("1-blockbyhash")
 		blockHashMut := bigtable.NewMutation()
+
 		blockHashMut.Set("cf", "blockNumber", bigtable.Now(), []byte(strconv.Itoa(bd.blockNumber)))
 		if err := blockHashTable.Apply(ctx, bd.blockHash, blockHashMut); err != nil {
 			log.Fatalf("Could not apply mutation to blockbyhash table: %v", err)
@@ -205,17 +239,36 @@ func addSampleData() {
 		log.Println("Successfully added blockHash: " + bd.blockHash + " to table: blockbyhash")
 
 		// Add a row to the "blockbynumber" table.
-		blockNumberTable := client.Open("blockbynumber")
+		blockNumberTable := client.Open("1-blockbynumber")
 		blockNumberMut := bigtable.NewMutation()
 		blockNumberMut.Set("cf", "blockHash", bigtable.Now(), []byte(bd.blockHash))
 		// Convert the block number to a big-endian byte slice.
 		blockNumberBytes := make([]byte, 8)
-		binary.BigEndian.PutUint64(blockNumberBytes, uint64(bd.blockNumber))
+		binary.BigEndian.PutUint64(blockNumberBytes, uint64(^bd.blockNumber)) // ^ flips the bits for storing the ints in decreasing order
 
 		if err := blockNumberTable.Apply(ctx, string(blockNumberBytes), blockNumberMut); err != nil {
 			log.Fatalf("Could not apply mutation to blockbynumber table: %v", err)
 		}
 		log.Println("Successfully added blockNumber: " + strconv.Itoa(bd.blockNumber) + " to table: blockbynumber")
+	}
+
+	txByHashData := []struct {
+		txHash string
+		txData string
+	}{
+		{"0x28211d40bbe41fcc0db49d1349d34e491f0a0368d4d599314b658b238ed0c5d8", "{JSON data for tx 0x28}"},
+		{"0x38211d40bbe41fcc0db49d1349d34e491f0a0368d4d599314b658b238ed0c5d9", "{JSON data for tx 0x38}"},
+		{"0x48211d40bbe41fcc0db49d1349d34e491f0a0368d4d599314b658b238ed0c5da", "{JSON data for tx 0x48}"},
+	}
+
+	txByHashTable := client.Open("1-txbyhash")
+	for _, tx := range txByHashData {
+		txByHashMut := bigtable.NewMutation()
+		txByHashMut.Set("cf", "txData", bigtable.Now(), []byte(tx.txData))
+		if err := txByHashTable.Apply(ctx, tx.txHash, txByHashMut); err != nil {
+			log.Fatalf("Could not apply mutation to txbyhash table: %v", err)
+		}
+		log.Println("Successfully added txHash: " + tx.txHash + " to table: 1-txbyhash")
 	}
 }
 
@@ -224,8 +277,8 @@ func main() {
 	if err != nil {
 		log.Fatal("Error loading .env file")
 	}
-	// setupBigTable()
-	// addSampleData()
+	setupBigTable()
+	addSampleData()
 
 	ctx := context.Background()
 	bigTableClient, err := bigtable.NewClient(ctx, "project-id", "instance-id")
@@ -268,6 +321,18 @@ func main() {
 
 		case "eth_getLogs":
 			response, _ := handleGetLogsResponse(c, &req, bigTableClient)
+			c.JSON(http.StatusOK, response)
+
+		case "eth_getBlockByHash":
+			response, _ := handleBlockByHashResponse(c, &req, bigTableClient)
+			c.JSON(http.StatusOK, response)
+
+		case "eth_getBlockByNumber":
+			response, _ := handleBlockByNumberResponse(c, &req, bigTableClient)
+			c.JSON(http.StatusOK, response)
+
+		case "eth_getTransactionByHash":
+			response, _ := handleTransactionByHashResponse(c, &req, bigTableClient)
 			c.JSON(http.StatusOK, response)
 
 		default:
